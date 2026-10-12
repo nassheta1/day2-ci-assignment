@@ -3,6 +3,18 @@ name: Day 2 CI
 run-name: "Day 2 CI triggered by ${{ github.actor }}"
 
 on:
+
+ push:
+    branches:
+      - main
+    paths-ignore:
+      - '**/*.md'
+      - 'docs/**'
+
+  pull_request:
+    branches:
+      - main
+
   workflow_dispatch:
 
 permissions:
