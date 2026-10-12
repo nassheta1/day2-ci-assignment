@@ -2,6 +2,9 @@ name: Day 2 CI
 
 run-name: "Day 2 CI triggered by ${{ github.actor }}"
 
+env:
+  APP_NAME: temperature
+
 on:
   push:
     branches:
@@ -79,3 +82,145 @@ jobs:
           if-no-files-found: warn
           retention-days: 5
 
+  package:
+    name: Build Package
+    runs-on: ubuntu-latest
+    needs: test
+    timeout-minutes: 10
+
+    if: ${{ github.event_name != 'workflow_dispatch' || inputs.create-package }}
+
+    outputs:
+      version: ${{ steps.version.outputs.version }}
+
+    steps:
+      - name: Checkout repository
+        uses: actions/checkout@v5
+
+      - name: Set package version
+        id: version
+        run: |
+          VERSION="0.1.${GITHUB_RUN_NUMBER}"
+          echo "version=$VERSION" >> "$GITHUB_OUTPUT"
+          echo "Package version: $VERSION"
+
+      - name: Create package archive
+        env:
+          VERSION: ${{ steps.version.outputs.version }}
+        run: |
+          mkdir -p dist
+          tar -czf "dist/temperature-${VERSION}.tar.gz" \
+            temperature.py README.md
+          ls -lh dist/
+
+      - name: Upload package artifact
+        uses: actions/upload-artifact@v4
+        with:
+          name: package
+          path: dist/temperature-${{ steps.version.outputs.version }}.tar.gz
+          if-no-files-found: error
+          retention-days: 5
+  verify:
+    name: Verify Package
+    runs-on: ubuntu-latest
+    needs: package
+    timeout-minutes: 5
+
+    steps:
+      - name: Download package artifact
+        uses: actions/download-artifact@v4
+        with:
+          name: package
+          path: dist/
+
+      - name: Extract package
+        run: |
+          mkdir -p extracted
+          tar -xzf dist/temperature-*.tar.gz -C extracted
+          ls -l extracted/
+
+      - name: Verify application
+        working-directory: extracted
+        run: |
+          python3 -c "from temperature import celsius_to_fahrenheit as c; assert c(100) == 212; print('Package OK')"
+  report:
+    name: Generate CI Report
+    runs-on: ubuntu-latest
+    needs: [test, package]
+    if: always()
+    timeout-minutes: 5
+
+    steps:
+      - name: Generate workflow summary
+        env:
+          REPORT_TITLE: ${{ vars.REPORT_TITLE || 'CI Report' }}
+          APP_NAME: ${{ env.APP_NAME }}
+          VERSION: ${{ needs.package.outputs.version }}
+          COMMIT_SHA: ${{ github.sha }}
+          EVENT_NAME: ${{ github.event_name }}
+          TEST_RESULT: ${{ needs.test.result }}
+          PACKAGE_RESULT: ${{ needs.package.result }}
+        run: |
+          VERSION="${VERSION:-n/a}"
+          SHORT_SHA="${COMMIT_SHA::7}"
+
+          {
+            echo "# ${REPORT_TITLE}"
+            echo
+            echo "| Field | Result |"
+            echo "|---|---|"
+            echo "| Application | ${APP_NAME} |"
+            echo "| Version | ${VERSION} |"
+            echo "| Commit | ${SHORT_SHA} |"
+            echo "| Event | ${EVENT_NAME} |"
+            echo "| Tests | ${TEST_RESULT} |"
+            echo "| Package | ${PACKAGE_RESULT} |"
+          } >> "$GITHUB_STEP_SUMMARY"
+
+      - name: Check notification token
+        if: ${{ secrets.NOTIFY_TOKEN != '' }}
+        env:
+          NOTIFY_TOKEN: ${{ secrets.NOTIFY_TOKEN }}
+        run: |
+          echo "Notification token is configured."
+          echo "Token length: ${#NOTIFY_TOKEN}"
+
+  pr-comment:
+    name: Comment on Pull Request
+    runs-on: ubuntu-latest
+    needs: [test, package]
+    if: ${{ always() && github.event_name == 'pull_request' }}
+    timeout-minutes: 5
+
+    permissions:
+      pull-requests: write
+
+    steps:
+      - name: Add CI result comment
+        uses: actions/github-script@v7
+        env:
+          TEST_RESULT: ${{ needs.test.result }}
+          PACKAGE_RESULT: ${{ needs.package.result }}
+          VERSION: ${{ needs.package.outputs.version }}
+        with:
+          script: |
+            const testResult = process.env.TEST_RESULT;
+            const packageResult = process.env.PACKAGE_RESULT;
+            const version = process.env.VERSION || 'n/a';
+
+            const body = [
+              '## CI Pipeline Results',
+              '',
+              `- **Tests:** ${testResult}`,
+              `- **Package:** ${packageResult}`,
+              `- **Version:** ${version}`,
+              '',
+              'This comment was generated automatically by GitHub Actions.'
+            ].join('\n');
+
+            await github.rest.issues.createComment({
+              owner: context.repo.owner,
+              repo: context.repo.repo,
+              issue_number: context.issue.number,
+              body
+            });
