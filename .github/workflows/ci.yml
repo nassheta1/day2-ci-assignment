@@ -3,8 +3,7 @@ name: Day 2 CI
 run-name: "Day 2 CI triggered by ${{ github.actor }}"
 
 on:
-
- push:
+  push:
     branches:
       - main
     paths-ignore:
